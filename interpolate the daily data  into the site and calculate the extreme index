@@ -9,7 +9,7 @@ import xarray as xr
 # 其次，读取nc数据，处理时间和经纬度网格，准备插值
 # 随后，按照日期进行插值，nc为日数据，因此每日形成一个插值，注意，这里每日一个插值，程序循环数非常多，因此程序运行时间较长。
 # 最后，根据每日插值结果进行统计。
-# 其中路径请自行修改，建议先安装所需要的库类。
+
 
 #定义插值函数
 def grid_interp_to_station(all_data,grid_lon,grid_lat,station_lon ,station_lat ,method='linear'):
