@@ -1,0 +1,125 @@
+import numpy as np
+import pandas as pd
+from scipy.interpolate import griddata
+import datetime
+import xarray as xr
+
+# 总体思路：
+# 首先，取出站点经纬度序列，准备用于插值
+# 其次，读取nc数据，处理时间和经纬度网格，准备插值
+# 随后，按照日期进行插值，nc为日数据，因此每日形成一个插值，注意，这里每日一个插值，程序循环数非常多，因此程序运行时间较长。
+# 最后，根据每日插值结果进行统计。
+# 其中路径请自行修改，建议先安装所需要的库类。
+
+#定义插值函数
+def grid_interp_to_station(all_data,grid_lon,grid_lat,station_lon ,station_lat ,method='linear'):
+    '''
+    使用griddata函数将等经纬度网格数据值插值到离散点上。griddata属于scipy库
+    输入变量：
+        all_data,形式为：插值数据的二维数组
+        grid_lon,grid_lat：all_data的经纬度网格，这里是按照nc中的存储方式，这两个应为一维数组，如果其他文件中，这两个变量按照网格存储，则不需要进行下述的网格化过程。
+        station_lon: 站点经度
+        station_lat: 站点纬度。此处经纬度站点为序列，因为是同时进行多站点插值。
+        method: 插值方法，可选{‘linear’, ‘nearest’, ‘cubic’}
+    '''
+    station_lon = np.array(station_lon).reshape(-1, 1)#转成一列数组
+    station_lat = np.array(station_lat).reshape(-1, 1)
+
+    data = all_data.reshape(-1, 1)
+    #网格化
+    grid_lons,grid_lats = np.meshgrid(grid_lon,grid_lat)#从坐标向量中返回坐标矩阵
+
+    grid_lons = grid_lons.reshape(-1, 1)
+    grid_lats = grid_lats.reshape(-1, 1)
+    points = np.concatenate([grid_lons, grid_lats], axis=1)#数组拼接#axis=1表示对应行的数组进行拼接
+
+    station_value = griddata(points, data, (station_lon, station_lat), method=method)
+    station_value = station_value[:, :, 0]
+    #返回各站点的插值结果
+    return station_value
+
+#读取站点信息
+station_fn = r'\As2_lat_long_year.txt'
+station_table = pd.read_csv(station_fn,delimiter = '\t', names = ['station','lat','lon','year','month','day','data1','data2','data3'])
+#去重处理，提取经纬度，此处重新保存为文件station_geo_information.csv
+station_table = station_table.drop_duplicates(subset=['station'], keep='first')
+station_table.reset_index(drop=True, inplace=True)#drop为False则索引列会被还原为普通列，否则会丢失
+station_table = station_table.drop(columns=['year','month','day','data1','data2','data3'])
+station_lon = station_table['lon'].values*0.01
+station_table['lon'] = station_lon
+station_lat = station_table['lat'].values*0.01
+station_table['lat'] = station_lat
+
+#将站点信息顺手输出了
+station_table.to_csv(r'\station_geo_information.csv')
+#将站号取出在数组中，备用。
+stations = station_table['station'].values
+
+#读取nc文件
+fn = r'\tasmax_day_GISS-E2-1-G_historical_r1i1p1f1_gn_19500101-20141231.nc'
+f = xr.open_dataset(fn)
+
+time = f['time'].values.astype(datetime.datetime)
+lon = f['lon'].values
+lat = f['lat'].values
+tmax = f['tasmax'].values
+
+#设定插值的起止时间，12时的输入是为了适应nc文件中的时间保存方式。
+st = datetime.datetime(1970,1,1,12,0,0)
+et = datetime.datetime(2014,12,31,12,0,0)
+
+#nc文件的时间格式转存
+times = []
+for i in time:
+    times.append(i.strftime('%Y%m%d%H%M%S'))
+#times.append(pd.to_datetime(i).strftime('%Y%m%d%H%M%S'))#T时间格式
+
+#插值循环
+data_array = None
+time_use = []
+n = 0
+while st <= et:
+    ti = st.strftime('%Y%m%d%H%M%S')
+    #这里加入一个误差捕捉，是因为闰年2月29日的数组在nc中并没有体现，
+    try:
+        data = tmax[times.index(ti)] #找到对应时间的数据数组
+        out_data = grid_interp_to_station(data,lon,lat,station_lon ,station_lat ,method='linear')
+        #print(out_data.shape)
+        #利用数组存储
+        if n == 0:
+            data_array = out_data
+        else:
+            data_array = np.append(data_array,out_data, axis=1)
+        n = n + 1
+        time_use.append(ti)
+        st = st + datetime.timedelta(days = 1)
+    except:
+        print(ti) #输出对应的闰年2月29日
+        st = st + datetime.timedelta(days=1)
+        continue
+
+#将数据数组转存为DataFrame格式，方便进行索引。
+data_table = pd.DataFrame(data_array)
+data_table.index = stations
+data_table.columns = time_use
+#插值之后的数据可以输出
+#data_table.to_csv(r'\station_geo_information_data.csv')
+data_table = data_table.T #转置
+
+tmax_mean = []
+tmax_max = []
+tmax_sup_25 = []
+#计算各指数
+for sta in stations:
+    da = data_table[sta].values
+    tmax_mean.append(np.mean(da))
+    tmax_max.append(np.max(da))
+    da[da > 25 + 273.15] = -1
+    da = list(da)
+    tmax_sup_25.append(da.count(-1))
+
+#存储
+station_table['tmax_mean'] = tmax_mean
+station_table['tmax_max'] = tmax_max
+station_table['tmax>25'] = tmax_sup_25
+station_table.to_csv(r'\station_data_1970-2014.csv')
